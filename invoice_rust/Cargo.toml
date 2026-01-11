@@ -22,3 +22,8 @@ tokio = { version = "1", features = ["full"] }
 walkdir = "2.4"
 # 日志（可选）
 log = "0.4"
+# 并行处理
+rayon = "1.10"
+# 配置文件
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"

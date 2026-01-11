@@ -1,3 +1,4 @@
+mod config;
 mod extractor;
 mod gui;
 
@@ -22,7 +23,7 @@ fn main() -> Result<(), eframe::Error> {
 }
 
 fn setup_custom_fonts(ctx: &egui::Context) {
-    use egui::{FontFamily, FontId, FontData};
+    use egui::{FontFamily, FontId};
     
     let mut fonts = egui::FontDefinitions::default();
     
@@ -52,7 +53,6 @@ fn setup_custom_fonts(ctx: &egui::Context) {
 
 fn load_system_chinese_font(fonts: &mut egui::FontDefinitions) -> bool {
     use egui::{FontFamily, FontData};
-    use std::path::Path;
     
     // macOS 中文字体路径
     #[cfg(target_os = "macos")]

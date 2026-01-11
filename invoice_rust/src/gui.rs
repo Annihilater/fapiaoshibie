@@ -4,6 +4,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Instant;
 
+use crate::config::Config;
 use crate::extractor;
 
 // 专业配色系统
@@ -59,10 +60,12 @@ pub struct InvoiceApp {
     result_file_path: String,
     result_data: Vec<extractor::InvoiceFile>,
     show_table: bool,
+    config: Config,
 }
 
 impl Default for InvoiceApp {
     fn default() -> Self {
+        let config = Config::load();
         Self {
             invoice_dir: String::new(),
             buyer_keyword: String::new(),
@@ -80,6 +83,7 @@ impl Default for InvoiceApp {
             result_file_path: String::new(),
             result_data: Vec::new(),
             show_table: true,
+            config,
         }
     }
 }
@@ -116,6 +120,7 @@ impl InvoiceApp {
         let invoice_dir = self.invoice_dir.clone();
         let buyer_keyword = self.buyer_keyword.clone();
         let output_path = self.output_path.clone();
+        let thread_count = self.config.get_thread_pool_size();
 
         self.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string());
         self.log("⚡ 开始处理发票文件".to_string());
@@ -125,6 +130,7 @@ impl InvoiceApp {
         } else {
             self.log("🏢 关键词: 未设置（自动识别）".to_string());
         }
+        self.log(format!("🔧 线程数: {} 个并行处理", thread_count));
         self.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string());
 
         let (tx, rx) = mpsc::channel();
@@ -139,10 +145,11 @@ impl InvoiceApp {
                 Some(buyer_keyword.as_str())
             };
 
-            let result = extractor::process_invoices(
+            let result = extractor::process_invoices_with_threads(
                 &base_path,
                 buyer_kw,
                 Some(&output_path_buf),
+                Some(thread_count),
             );
 
             let _ = tx.send(result);
@@ -349,12 +356,21 @@ impl eframe::App for InvoiceApp {
                                     .rounding(egui::Rounding::same(12.0))
                                     .inner_margin(egui::Margin::same(20.0))
                                     .show(ui, |ui| {
-                                        ui.label(
-                                            egui::RichText::new("配置")
-                                                .size(16.0)
-                                                .color(TEXT_HIGH)
-                                                .strong()
-                                        );
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                egui::RichText::new("配置")
+                                                    .size(16.0)
+                                                    .color(TEXT_HIGH)
+                                                    .strong()
+                                            );
+                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                ui.label(
+                                                    egui::RichText::new(format!("🔧 {} 线程", self.config.get_thread_pool_size()))
+                                                        .size(11.0)
+                                                        .color(ACCENT_TECH)
+                                                );
+                                            });
+                                        });
                                         ui.add_space(16.0);
 
                                         // 发票目录

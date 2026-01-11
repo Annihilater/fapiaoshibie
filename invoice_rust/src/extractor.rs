@@ -1,6 +1,8 @@
 use regex::Regex;
 use std::path::Path;
 use walkdir::WalkDir;
+use rayon::prelude::*;
+use std::sync::Mutex;
 
 /// 发票信息结构
 #[derive(Debug, Clone)]
@@ -254,25 +256,49 @@ pub struct ProcessResult {
 }
 
 /// 处理所有发票文件并生成Excel
+/// 使用默认线程数（从配置文件加载）
+#[allow(dead_code)]
 pub fn process_invoices(
     base_path: &Path,
     buyer_keyword: Option<&str>,
     output_path: Option<&Path>,
 ) -> Result<ProcessResult, String> {
-    let mut all_invoices = Vec::new();
+    process_invoices_with_threads(base_path, buyer_keyword, output_path, None)
+}
 
-    // 遍历目录
-    for entry in WalkDir::new(base_path)
+/// 使用指定线程数处理所有发票文件并生成Excel
+pub fn process_invoices_with_threads(
+    base_path: &Path,
+    buyer_keyword: Option<&str>,
+    output_path: Option<&Path>,
+    thread_count: Option<usize>,
+) -> Result<ProcessResult, String> {
+    // 设置线程池大小
+    if let Some(threads) = thread_count {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build_global()
+            .ok(); // 忽略错误,因为全局线程池可能已经初始化
+    }
+
+    // 首先收集所有需要处理的文件信息
+    let file_entries: Vec<_> = WalkDir::new(base_path)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
-    {
+        .collect();
+
+    // 使用 Mutex 保护共享的结果向量
+    let all_invoices = Mutex::new(Vec::new());
+
+    // 并行处理所有文件
+    file_entries.par_iter().for_each(|entry| {
         let file_path = entry.path();
         let file_name = entry.file_name().to_string_lossy();
         
         // 跳过隐藏文件
         if file_name.starts_with('.') {
-            continue;
+            return;
         }
 
         let file_ext = file_path
@@ -282,7 +308,7 @@ pub fn process_invoices(
             .to_uppercase();
 
         if !matches!(file_ext.as_str(), "PDF" | "PNG" | "JPG" | "JPEG") {
-            continue;
+            return;
         }
 
         let rel_path = entry
@@ -310,8 +336,15 @@ pub fn process_invoices(
             }
         }
 
-        all_invoices.push(invoice_file);
-    }
+        // 将结果添加到共享向量中
+        if let Ok(mut invoices) = all_invoices.lock() {
+            invoices.push(invoice_file);
+        }
+    });
+
+    // 从 Mutex 中取出结果
+    let mut all_invoices = all_invoices.into_inner()
+        .map_err(|e| format!("获取处理结果失败: {}", e))?;
 
     // 从图片文件名提取金额
     for inv in &mut all_invoices {
