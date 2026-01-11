@@ -28,6 +28,13 @@ struct ProcessStats {
     elapsed_time: f64,
 }
 
+#[derive(Default, Clone)]
+struct ProcessProgress {
+    total: usize,
+    completed: usize,
+    is_active: bool,
+}
+
 impl ProcessStats {
     fn pdf_rate(&self) -> f64 {
         if self.total_files == 0 { 0.0 }
@@ -51,6 +58,7 @@ pub struct InvoiceApp {
     is_processing: bool,
     status_message: String,
     result_receiver: Option<mpsc::Receiver<Result<extractor::ProcessResult, String>>>,
+    progress_receiver: Option<mpsc::Receiver<extractor::ProgressMessage>>,
     browse_dir_clicked: bool,
     browse_output_clicked: bool,
     open_result_clicked: bool,
@@ -61,6 +69,7 @@ pub struct InvoiceApp {
     result_data: Vec<extractor::InvoiceFile>,
     show_table: bool,
     config: Config,
+    progress: ProcessProgress,
 }
 
 impl Default for InvoiceApp {
@@ -74,6 +83,7 @@ impl Default for InvoiceApp {
             is_processing: false,
             status_message: "就绪".to_string(),
             result_receiver: None,
+            progress_receiver: None,
             browse_dir_clicked: false,
             browse_output_clicked: false,
             open_result_clicked: false,
@@ -84,6 +94,7 @@ impl Default for InvoiceApp {
             result_data: Vec::new(),
             show_table: true,
             config,
+            progress: ProcessProgress::default(),
         }
     }
 }
@@ -133,7 +144,16 @@ impl InvoiceApp {
         self.log(format!("🔧 线程数: {} 个并行处理", thread_count));
         self.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string());
 
-        let (tx, rx) = mpsc::channel();
+        // 创建结果通道和进度通道
+        let (result_tx, result_rx) = mpsc::channel();
+        let (progress_tx, progress_rx) = mpsc::channel();
+
+        // 初始化进度
+        self.progress = ProcessProgress {
+            total: 0,
+            completed: 0,
+            is_active: true,
+        };
 
         thread::spawn(move || {
             let base_path = PathBuf::from(&invoice_dir);
@@ -145,23 +165,57 @@ impl InvoiceApp {
                 Some(buyer_keyword.as_str())
             };
 
-            let result = extractor::process_invoices_with_threads(
+            let result = extractor::process_invoices_with_progress(
                 &base_path,
                 buyer_kw,
                 Some(&output_path_buf),
                 Some(thread_count),
+                Some(progress_tx),
             );
 
-            let _ = tx.send(result);
+            let _ = result_tx.send(result);
         });
 
-        self.result_receiver = Some(rx);
+        self.result_receiver = Some(result_rx);
+        self.progress_receiver = Some(progress_rx);
+    }
+
+    fn check_progress(&mut self) {
+        // 收集所有进度消息
+        let mut messages = Vec::new();
+        if let Some(ref rx) = self.progress_receiver {
+            while let Ok(msg) = rx.try_recv() {
+                messages.push(msg);
+            }
+        }
+        
+        // 处理收集到的消息
+        for msg in messages {
+            match msg {
+                extractor::ProgressMessage::Started { total } => {
+                    self.progress.total = total;
+                    self.progress.completed = 0;
+                    self.progress.is_active = true;
+                }
+                extractor::ProgressMessage::FileCompleted { filename: _, completed, total } => {
+                    self.progress.completed = completed;
+                    self.progress.total = total;
+                }
+                extractor::ProgressMessage::Finished => {
+                    self.progress.is_active = false;
+                }
+                extractor::ProgressMessage::Log(log_msg) => {
+                    self.log(log_msg);
+                }
+            }
+        }
     }
 
     fn check_result(&mut self) {
         if let Some(ref rx) = self.result_receiver {
             if let Ok(result) = rx.try_recv() {
                 self.is_processing = false;
+                self.progress.is_active = false;
                 let elapsed = self.start_time.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
                 
                 match result {
@@ -204,6 +258,7 @@ impl InvoiceApp {
                     }
                 }
                 self.result_receiver = None;
+                self.progress_receiver = None;
             }
         }
     }
@@ -289,6 +344,7 @@ impl eframe::App for InvoiceApp {
         }
 
         if self.is_processing {
+            self.check_progress();
             self.check_result();
             ctx.request_repaint();
         }
@@ -420,6 +476,70 @@ impl eframe::App for InvoiceApp {
                                         
                                         if ui.add_enabled(!self.is_processing, button).clicked() {
                                             self.start_processing();
+                                        }
+
+                                        // 进度显示
+                                        if self.progress.is_active && self.progress.total > 0 {
+                                            ui.add_space(16.0);
+                                            
+                                            // 进度文本
+                                            ui.horizontal(|ui| {
+                                                ui.label(
+                                                    egui::RichText::new(format!("进度: {}/{}", 
+                                                        self.progress.completed, 
+                                                        self.progress.total))
+                                                        .size(12.0)
+                                                        .color(TEXT_MEDIUM)
+                                                );
+                                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                    let percentage = if self.progress.total > 0 {
+                                                        (self.progress.completed as f64 / self.progress.total as f64 * 100.0) as usize
+                                                    } else {
+                                                        0
+                                                    };
+                                                    ui.label(
+                                                        egui::RichText::new(format!("{}%", percentage))
+                                                            .size(12.0)
+                                                            .color(ACCENT_TECH)
+                                                            .strong()
+                                                    );
+                                                });
+                                            });
+                                            
+                                            ui.add_space(6.0);
+                                            
+                                            // 进度条
+                                            let progress_ratio = if self.progress.total > 0 {
+                                                self.progress.completed as f32 / self.progress.total as f32
+                                            } else {
+                                                0.0
+                                            };
+                                            
+                                            let progress_bar_height = 8.0;
+                                            let (rect, _) = ui.allocate_exact_size(
+                                                egui::vec2(ui.available_width(), progress_bar_height),
+                                                egui::Sense::hover()
+                                            );
+                                            
+                                            // 背景
+                                            ui.painter().rect_filled(
+                                                rect,
+                                                egui::Rounding::same(4.0),
+                                                BG_INPUT
+                                            );
+                                            
+                                            // 进度
+                                            if progress_ratio > 0.0 {
+                                                let progress_rect = egui::Rect::from_min_size(
+                                                    rect.min,
+                                                    egui::vec2(rect.width() * progress_ratio, rect.height())
+                                                );
+                                                ui.painter().rect_filled(
+                                                    progress_rect,
+                                                    egui::Rounding::same(4.0),
+                                                    ACCENT_SUCCESS
+                                                );
+                                            }
                                         }
                                     });
                             });

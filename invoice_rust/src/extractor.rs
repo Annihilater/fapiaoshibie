@@ -2,7 +2,9 @@ use regex::Regex;
 use std::path::Path;
 use walkdir::WalkDir;
 use rayon::prelude::*;
-use std::sync::Mutex;
+use std::sync::{Mutex, Arc};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::Sender;
 
 /// 发票信息结构
 #[derive(Debug, Clone)]
@@ -255,6 +257,19 @@ pub struct ProcessResult {
     pub invoices: Vec<InvoiceFile>,
 }
 
+/// 进度更新消息
+#[derive(Debug, Clone)]
+pub enum ProgressMessage {
+    /// 开始处理，参数为总文件数
+    Started { total: usize },
+    /// 文件处理完成，参数为文件名和当前完成数
+    FileCompleted { filename: String, completed: usize, total: usize },
+    /// 处理完成
+    Finished,
+    /// 日志消息
+    Log(String),
+}
+
 /// 处理所有发票文件并生成Excel
 /// 使用默认线程数（从配置文件加载）
 #[allow(dead_code)]
@@ -273,6 +288,17 @@ pub fn process_invoices_with_threads(
     output_path: Option<&Path>,
     thread_count: Option<usize>,
 ) -> Result<ProcessResult, String> {
+    process_invoices_with_progress(base_path, buyer_keyword, output_path, thread_count, None)
+}
+
+/// 使用指定线程数处理所有发票文件并生成Excel，支持进度回调
+pub fn process_invoices_with_progress(
+    base_path: &Path,
+    buyer_keyword: Option<&str>,
+    output_path: Option<&Path>,
+    thread_count: Option<usize>,
+    progress_sender: Option<Sender<ProgressMessage>>,
+) -> Result<ProcessResult, String> {
     // 设置线程池大小
     if let Some(threads) = thread_count {
         rayon::ThreadPoolBuilder::new()
@@ -288,28 +314,45 @@ pub fn process_invoices_with_threads(
         .filter(|e| e.file_type().is_file())
         .collect();
 
+    // 过滤出有效的文件
+    let valid_entries: Vec<_> = file_entries.iter()
+        .filter(|entry| {
+            let file_name = entry.file_name().to_string_lossy();
+            if file_name.starts_with('.') {
+                return false;
+            }
+            let file_ext = entry.path()
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_uppercase();
+            matches!(file_ext.as_str(), "PDF" | "PNG" | "JPG" | "JPEG")
+        })
+        .collect();
+
+    let total_files = valid_entries.len();
+    
+    // 发送开始消息
+    if let Some(ref sender) = progress_sender {
+        let _ = sender.send(ProgressMessage::Started { total: total_files });
+        let _ = sender.send(ProgressMessage::Log(format!("📊 检测到 {} 个文件待处理", total_files)));
+    }
+
     // 使用 Mutex 保护共享的结果向量
     let all_invoices = Mutex::new(Vec::new());
+    // 使用原子计数器跟踪完成数量
+    let completed_count = Arc::new(AtomicUsize::new(0));
 
     // 并行处理所有文件
-    file_entries.par_iter().for_each(|entry| {
+    valid_entries.par_iter().for_each(|entry| {
         let file_path = entry.path();
-        let file_name = entry.file_name().to_string_lossy();
-        
-        // 跳过隐藏文件
-        if file_name.starts_with('.') {
-            return;
-        }
+        let file_name = entry.file_name().to_string_lossy().to_string();
 
         let file_ext = file_path
             .extension()
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_uppercase();
-
-        if !matches!(file_ext.as_str(), "PDF" | "PNG" | "JPG" | "JPEG") {
-            return;
-        }
 
         let rel_path = entry
             .path()
@@ -321,7 +364,7 @@ pub fn process_invoices_with_threads(
 
         let mut invoice_file = InvoiceFile {
             folder: rel_path,
-            filename: file_name.to_string(),
+            filename: file_name.clone(),
             file_type: file_ext.clone(),
             info: InvoiceInfo::default(),
         };
@@ -340,7 +383,30 @@ pub fn process_invoices_with_threads(
         if let Ok(mut invoices) = all_invoices.lock() {
             invoices.push(invoice_file);
         }
+
+        // 更新完成计数并发送进度
+        let completed = completed_count.fetch_add(1, Ordering::SeqCst) + 1;
+        if let Some(ref sender) = progress_sender {
+            let _ = sender.send(ProgressMessage::FileCompleted {
+                filename: file_name.clone(),
+                completed,
+                total: total_files,
+            });
+            
+            // 每10个文件或最后一个文件时发送日志
+            if completed % 10 == 0 || completed == total_files {
+                let percentage = (completed as f64 / total_files as f64 * 100.0) as usize;
+                let _ = sender.send(ProgressMessage::Log(
+                    format!("✓ 已处理 {}/{} 个文件 ({}%)", completed, total_files, percentage)
+                ));
+            }
+        }
     });
+
+    // 发送完成消息
+    if let Some(ref sender) = progress_sender {
+        let _ = sender.send(ProgressMessage::Finished);
+    }
 
     // 从 Mutex 中取出结果
     let mut all_invoices = all_invoices.into_inner()
