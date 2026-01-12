@@ -45,6 +45,18 @@ cargo run --release
 ./target/release/invoice-extractor
 ```
 
+### 4. 交叉编译（可选）
+
+如果需要编译 Windows 版本（在 macOS 上）：
+
+```bash
+# 使用自动化脚本（推荐）
+./build-windows.sh
+
+# 或查看详细指南
+# 查看 QUICK_BUILD.md 或 CROSS_COMPILE.md
+```
+
 ## 使用方法
 
 1. **选择发票目录** - 点击"浏览..."按钮选择包含发票PDF文件的目录
@@ -57,6 +69,7 @@ cargo run --release
 ### 实时进度显示
 
 处理过程中，您可以看到：
+
 - **文件总数**: 程序开始时立即显示需要处理的文件总数
 - **进度条**: 可视化进度条动态显示处理进度
 - **完成统计**: 实时显示 "已完成/总数" 和完成百分比
@@ -162,10 +175,25 @@ invoice_rust/
 ### 构建发布版本
 
 ```bash
+# macOS 版本
 cargo build --release
+
+# Windows 版本（需要 Docker）
+./build-windows.sh
 ```
 
 可执行文件位于 `target/release/invoice-extractor`
+
+### 跨平台编译
+
+支持从 macOS 编译 Windows/Linux 版本，查看 [交叉编译指南](CROSS_COMPILE.md)
+
+**快速开始：**
+
+```bash
+# M1 Mac 编译 Windows 版本
+./build-windows.sh
+```
 
 ## License
 
@@ -173,4 +201,4 @@ MIT
 
 ---
 
-**GitHub**: https://github.com/MaydayV/fapiaoshibie
+**GitHub**: <https://github.com/MaydayV/fapiaoshibie>

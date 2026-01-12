@@ -1,20 +1,23 @@
-# Rust编译产物
+# Rust
 /target/
-**/*.rs.bk
-*.pdb
 Cargo.lock
 
-# IDE相关
-.idea/
+# 发布文件
+/release/
+
+# 配置文件（运行时生成）
+config.toml
+
+# IDE
 .vscode/
+.idea/
 *.swp
 *.swo
 *~
 
-# 操作系统相关
+# macOS
 .DS_Store
-Thumbs.db
 
-# 测试和输出文件
-*.xlsx
-test_invoices/
+# Windows
+Thumbs.db
+desktop.ini
